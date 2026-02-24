@@ -23,6 +23,7 @@ pub enum Program {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Field {
     pub name: String,
+    pub typ: String,
     pub attributes: Vec<Attribute>,
 }
 

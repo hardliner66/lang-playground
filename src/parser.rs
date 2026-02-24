@@ -304,20 +304,35 @@ impl Parser {
             Vec::new()
         };
 
-        let result = match &self.current_token {
-            Token::Identifier(name) => Ok(Field {
-                name: name.clone(),
-                attributes,
-            }),
-            _ => Err(ParseError::new(format!(
+        let name = if let Token::Identifier(name) = &self.current_token {
+            let name = name.clone();
+            self.advance();
+            name
+        } else {
+            return Err(ParseError::new(format!(
                 "Expected field name, got {:?}",
                 self.current_token
-            ))),
+            )));
         };
-        if result.is_ok() {
+
+        self.expect(Token::Colon)?;
+
+        let typ = if let Token::Identifier(typ) = &self.current_token {
+            let typ = typ.clone();
             self.advance();
-        }
-        result
+            typ
+        } else {
+            return Err(ParseError::new(format!(
+                "Expected field type, got {:?}",
+                self.current_token
+            )));
+        };
+
+        Ok(Field {
+            name: name.clone(),
+            typ: typ.clone(),
+            attributes,
+        })
     }
 
     #[instrument(skip(self))]

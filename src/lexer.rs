@@ -259,7 +259,7 @@ impl Lexer {
                     current_literal.push(escaped_char);
                     self.advance();
                 }
-            } else if ch == '@' && self.peek(1) == Some('{') {
+            } else if ch == '#' && self.peek(1) == Some('{') {
                 // Start of interpolation
                 if !current_literal.is_empty() {
                     parts.push(InterpolationPart::Literal(current_literal.clone()));

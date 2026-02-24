@@ -2,8 +2,8 @@ require "addition"
 
 result = add(1, 2)
 message Blub
-  a
-  b
+  a: String
+  b: Integer
 end
 
 system Blah
