@@ -192,18 +192,16 @@ impl Lexer {
 
     #[instrument(ret, skip(self))]
     fn read_string(&mut self, quote: char) -> Token {
-        // For double quotes, check for interpolation
         if quote == '"' {
             return self.read_interpolated_string();
         }
 
-        // Single-quoted strings have no interpolation
         let mut string = String::new();
-        self.advance(); // Skip opening quote
+        self.advance();
 
         while let Some(ch) = self.current_char {
             if ch == quote {
-                self.advance(); // Skip closing quote
+                self.advance();
                 break;
             } else if ch == '\\' {
                 self.advance();
@@ -233,18 +231,16 @@ impl Lexer {
     fn read_interpolated_string(&mut self) -> Token {
         let mut parts = Vec::new();
         let mut current_literal = String::new();
-        self.advance(); // Skip opening quote
+        self.advance();
 
         while let Some(ch) = self.current_char {
             if ch == '"' {
-                // End of string
                 if !current_literal.is_empty() {
                     parts.push(InterpolationPart::Literal(current_literal));
                 }
-                self.advance(); // Skip closing quote
+                self.advance();
                 break;
             } else if ch == '\\' {
-                // Escape sequence
                 self.advance();
                 if let Some(escaped) = self.current_char {
                     let escaped_char = match escaped {
@@ -253,23 +249,21 @@ impl Lexer {
                         'r' => '\r',
                         '\\' => '\\',
                         '"' => '"',
-                        '@' => '@', // Allow escaping @
+                        '@' => '@',
                         _ => escaped,
                     };
                     current_literal.push(escaped_char);
                     self.advance();
                 }
             } else if ch == '#' && self.peek(1) == Some('{') {
-                // Start of interpolation
                 if !current_literal.is_empty() {
                     parts.push(InterpolationPart::Literal(current_literal.clone()));
                     current_literal.clear();
                 }
 
-                self.advance(); // Skip @
-                self.advance(); // Skip {
+                self.advance();
+                self.advance();
 
-                // Tokenize the expression inside #{}
                 let expr_tokens = self.read_interpolation_expression();
                 parts.push(InterpolationPart::Expression(expr_tokens));
             } else {
@@ -278,7 +272,6 @@ impl Lexer {
             }
         }
 
-        // If no interpolation was found, return a simple string
         if parts.is_empty() {
             Token::String(String::new())
         } else if parts.len() == 1 {
@@ -301,20 +294,18 @@ impl Lexer {
             if ch == '}' {
                 brace_depth -= 1;
                 if brace_depth == 0 {
-                    self.advance(); // Skip closing }
+                    self.advance();
                     break;
                 }
             } else if ch == '{' {
                 brace_depth += 1;
             }
 
-            // Skip whitespace but track it
             if ch == ' ' || ch == '\t' {
                 self.advance();
                 continue;
             }
 
-            // Get the next token
             let token = self.next_token_for_interpolation();
             if token != Token::Eof {
                 tokens.push(token);
@@ -326,10 +317,9 @@ impl Lexer {
 
     #[instrument(ret, skip(self))]
     fn next_token_for_interpolation(&mut self) -> Token {
-        // Similar to next_token but doesn't handle newlines/semicolons
         match self.current_char {
             None => Token::Eof,
-            Some('}') => Token::Eof, // Stop at closing brace
+            Some('}') => Token::Eof,
             Some('+') => {
                 self.advance();
                 Token::Plus
@@ -782,7 +772,7 @@ mod tests {
                 assert_eq!(parts.len(), 2);
                 assert!(matches!(&parts[0], InterpolationPart::Literal(s) if s == "Result: "));
                 if let InterpolationPart::Expression(tokens) = &parts[1] {
-                    assert!(tokens.len() >= 3); // x, +, y, *, 2
+                    assert!(tokens.len() >= 3);
                 }
             }
             _ => panic!("Expected InterpolatedString, got {:?}", token),

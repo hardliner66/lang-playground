@@ -1150,7 +1150,6 @@ impl Parser {
         Ok(pairs)
     }
 
-    /// Parse an interpolated string
     #[instrument(skip(self))]
     fn parse_interpolated_string(
         &mut self,
@@ -1167,7 +1166,6 @@ impl Parser {
                     ast_parts.push(AstPart::Literal(s));
                 }
                 LexerPart::Expression(tokens) => {
-                    // Create a mini-parser for the expression tokens
                     let expr = self.parse_interpolation_tokens(tokens)?;
                     ast_parts.push(AstPart::Expression(Box::new(expr)));
                 }
@@ -1177,7 +1175,6 @@ impl Parser {
         Ok(Expression::StringInterpolation(ast_parts))
     }
 
-    /// Parse tokens from string interpolation
     #[instrument(skip(self))]
     fn parse_interpolation_tokens(&mut self, tokens: Vec<Token>) -> ParseResult<Expression> {
         if tokens.is_empty() {
@@ -1186,19 +1183,15 @@ impl Parser {
             ));
         }
 
-        // Save current parser state
         let saved_tokens = std::mem::replace(&mut self.tokens, tokens);
         let saved_position = self.position;
         let saved_current = self.current_token.clone();
 
-        // Reset position for the interpolation tokens
         self.position = 0;
         self.current_token = self.tokens.get(0).cloned().unwrap_or(Token::Eof);
 
-        // Parse the expression
         let result = self.parse_expression();
 
-        // Restore parser state
         self.tokens = saved_tokens;
         self.position = saved_position;
         self.current_token = saved_current;
