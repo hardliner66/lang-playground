@@ -23,6 +23,7 @@ pub enum Value {
     Lambda(Vec<String>, Vec<Statement>, Rc<RefCell<Environment>>),
     Proc(ProcDef),
     Struct(StructDef),
+    System(SystemDef),
     Instance(String, Rc<RefCell<HashMap<String, Value>>>),
 }
 
@@ -51,8 +52,9 @@ impl Value {
 
     #[instrument(skip(self))]
     pub fn to_string(&self) -> String {
-        match self {
+        match &self {
             Value::Integer(n) => n.to_string(),
+            Value::System(s) => format!("#<System: {}>", s.name),
             Value::Float(f) => f.to_string(),
             Value::String(s) => s.clone(),
             Value::Symbol(s) => format!(":{}", s),
@@ -251,9 +253,9 @@ impl Interpreter {
                 self.env.borrow_mut().define(struct_def.name.clone(), value);
                 Ok(FlowControl::None)
             }
-            Statement::ActorDef(actor_def) => {
-                let value = Value::Struct(actor_def.clone());
-                self.env.borrow_mut().define(actor_def.name.clone(), value);
+            Statement::SystemDef(system_def) => {
+                let value = Value::System(system_def.clone());
+                self.env.borrow_mut().define(system_def.name.clone(), value);
                 Ok(FlowControl::None)
             }
             Statement::If(if_stmt) => self.execute_if(if_stmt),
@@ -561,6 +563,7 @@ impl Interpreter {
                     Value::Proc(_) => "proc",
                     Value::Struct(_) => "struct",
                     Value::Instance(_, _) => "instance",
+                    Value::System(_) => "system",
                 };
                 return Ok(Value::String(type_name.to_string()));
             }
