@@ -146,6 +146,7 @@ import "path/to/module"
 ### Operators
 
 #### Arithmetic
+
 - `+` Addition
 - `-` Subtraction
 - `*` Multiplication
@@ -154,6 +155,7 @@ import "path/to/module"
 - `**` Power
 
 #### Comparison
+
 - `==` Equal
 - `!=` Not equal
 - `<` Less than
@@ -162,11 +164,13 @@ import "path/to/module"
 - `>=` Greater than or equal
 
 #### Logical
+
 - `&&` Logical AND
 - `||` Logical OR
 - `!` Logical NOT
 
 #### Bitwise
+
 - `&` Bitwise AND
 - `|` Bitwise OR
 - `^` Bitwise XOR
@@ -196,28 +200,75 @@ main :: proc() {
     // Variables
     a := 10
     b := 20
-    
+
     // Call imported function
     sum := add(a, b)
-    
+
     // Conditionals
     if sum > 25 {
         println("Sum is large:", sum)
     } else {
         println("Sum is small:", sum)
     }
-    
+
     // Arrays
     numbers := [1, 2, 3, 4, 5]
-    
+
     // Loops
     for num in numbers {
         println("Number:", num)
     }
-    
+
     // Return result
     println("Final result:", sum)
 }
+```
+
+### Built-in Functions
+
+The language provides several built-in functions:
+
+```odin
+// Print with newline
+println("Hello", "World")      // Output: Hello World
+
+// Print without newline
+print("Hello ")
+print("World")                 // Output: Hello World
+
+// Get length of collections
+len([1, 2, 3])                // Returns 3
+len("Hello")                  // Returns 5
+
+// Get type name
+type_of(42)                   // Returns "int"
+type_of("hello")              // Returns "string"
+
+// Assertions
+assert(x > 0)                 // Throws error if false
+assert(x > 0, "x must be positive")
+```
+
+### Method Calls
+
+Objects support method calls using dot notation:
+
+```odin
+// Array methods
+arr := [1, 2, 3]
+length := arr.length()        // Returns 3
+arr.push(4)                   // Adds 4 to array
+
+// String methods
+text := "Hello"
+size := text.length()         // Returns 5
+
+// Struct constructors
+Person :: struct {
+    name: string,
+    age: int,
+}
+person := Person.new()        // Creates instance
 ```
 
 ## Examples
@@ -244,6 +295,14 @@ See the `examples/` directory for more examples:
 - ✅ Import system
 - ✅ Arithmetic, comparison, logical, and bitwise operators
 - ✅ Attributes (`#[attr]`)
+- ✅ **Comprehensive call evaluation system**
+  - Direct function calls
+  - Method calls with receivers (e.g., `arr.length()`)
+  - Built-in functions: `println`, `print`, `len`, `type_of`, `assert`
+  - Built-in methods: `length`, `size`, `push`, `pop`, `new`
+  - Recursive function calls
+  - Nested function calls
+  - Lambda expressions with closures
 
 ### Planned Features
 
@@ -261,6 +320,7 @@ See the `examples/` directory for more examples:
 
 - **[ODIN_SYNTAX.md](ODIN_SYNTAX.md)** - Complete syntax reference
 - **[MIGRATION_SUMMARY.md](MIGRATION_SUMMARY.md)** - Details of syntax transformation
+- **[CALL_EVALUATION.md](CALL_EVALUATION.md)** - Call evaluation and lookup system
 
 ## CLI Options
 

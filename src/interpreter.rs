@@ -182,7 +182,7 @@ pub struct Interpreter {
 
 impl Interpreter {
     pub fn new(path: Option<PathBuf>, search_paths: Vec<PathBuf>) -> Self {
-        let mut interpreter = Interpreter {
+        let interpreter = Interpreter {
             debug: false,
             env: Rc::new(RefCell::new(Environment::new())),
             output: Vec::new(),
@@ -191,22 +191,7 @@ impl Interpreter {
             loaded_files: Vec::new(),
         };
 
-        interpreter.register_builtins();
         interpreter
-    }
-
-    #[instrument(skip(self))]
-    fn register_builtins(&mut self) {
-        let println_proc = ProcDef {
-            name: "println".to_string(),
-            params: vec![],
-            return_type: None,
-            body: vec![],
-            attributes: vec![],
-        };
-        self.env
-            .borrow_mut()
-            .define("println".to_string(), Value::Proc(println_proc));
     }
 
     #[instrument(skip(self))]
@@ -233,7 +218,7 @@ impl Interpreter {
                         },
                     }
                 }
-                self.evaluate_call("main", &[])?;
+                self.evaluate_call(&None, "main", &[])?;
                 Ok(result)
             }
         }
@@ -420,7 +405,11 @@ impl Interpreter {
             }
             Expression::Binary(op, left, right) => self.evaluate_binary_op(*op, left, right),
             Expression::Unary(op, expr) => self.evaluate_unary_op(*op, expr),
-            Expression::Call { method, args } => self.evaluate_call(method, args),
+            Expression::Call {
+                receiver,
+                method,
+                args,
+            } => self.evaluate_call(receiver, method, args),
             Expression::Index { expr, index } => self.evaluate_index(expr, index),
             Expression::Lambda { params, body } => Ok(Value::Lambda(
                 params.clone(),
@@ -518,17 +507,209 @@ impl Interpreter {
     }
 
     #[instrument(skip(self))]
-    fn evaluate_call(&mut self, method: &str, args: &[Expression]) -> Result<Value, String> {
-        if method == "println" {
-            for arg in args {
-                let val = self.evaluate_expression(arg)?;
-                let output = val.to_string();
-                self.output.push(output.clone());
-                println!("{}", output);
+    fn evaluate_call(
+        &mut self,
+        receiver: &Option<Box<Expression>>,
+        method: &str,
+        args: &[Expression],
+    ) -> Result<Value, String> {
+        // Handle built-in functions
+        if receiver.is_none() {
+            match method {
+                "println" => {
+                    let mut parts = Vec::new();
+                    for arg in args {
+                        let val = self.evaluate_expression(arg)?;
+                        parts.push(val.to_string());
+                    }
+                    let output = parts.join(" ");
+                    self.output.push(output.clone());
+                    println!("{}", output);
+                    return Ok(Value::Nil);
+                }
+                "print" => {
+                    let mut parts = Vec::new();
+                    for arg in args {
+                        let val = self.evaluate_expression(arg)?;
+                        parts.push(val.to_string());
+                    }
+                    let output = parts.join(" ");
+                    print!("{}", output);
+                    return Ok(Value::Nil);
+                }
+                "len" => {
+                    if args.len() != 1 {
+                        return Err(format!("len() expects 1 argument, got {}", args.len()));
+                    }
+                    let val = self.evaluate_expression(&args[0])?;
+                    match val {
+                        Value::Array(arr) => return Ok(Value::Integer(arr.borrow().len() as i64)),
+                        Value::String(s) => return Ok(Value::Integer(s.len() as i64)),
+                        Value::Hash(hash) => return Ok(Value::Integer(hash.borrow().len() as i64)),
+                        _ => return Err(format!("len() not supported for {:?}", val)),
+                    }
+                }
+                "type_of" => {
+                    if args.len() != 1 {
+                        return Err(format!("type_of() expects 1 argument, got {}", args.len()));
+                    }
+                    let val = self.evaluate_expression(&args[0])?;
+                    let type_name = match val {
+                        Value::Integer(_) => "int",
+                        Value::Float(_) => "float",
+                        Value::String(_) => "string",
+                        Value::Symbol(_) => "symbol",
+                        Value::Boolean(_) => "bool",
+                        Value::Nil => "nil",
+                        Value::Array(_) => "array",
+                        Value::Hash(_) => "hash",
+                        Value::Lambda(_, _, _) => "lambda",
+                        Value::Proc(_) => "proc",
+                        Value::Struct(_) => "struct",
+                        Value::Instance(_, _) => "instance",
+                    };
+                    return Ok(Value::String(type_name.to_string()));
+                }
+                "assert" => {
+                    if args.is_empty() || args.len() > 2 {
+                        return Err(format!(
+                            "assert() expects 1 or 2 arguments, got {}",
+                            args.len()
+                        ));
+                    }
+                    let condition = self.evaluate_expression(&args[0])?;
+                    if !condition.is_truthy() {
+                        let message = if args.len() == 2 {
+                            self.evaluate_expression(&args[1])?.to_string()
+                        } else {
+                            "Assertion failed".to_string()
+                        };
+                        return Err(message);
+                    }
+                    return Ok(Value::Nil);
+                }
+                _ => {}
             }
-            return Ok(Value::Nil);
         }
-        Err(format!("Unknown Function {method}"))
+
+        // If there's a receiver, this is a method call
+        if let Some(recv_expr) = receiver {
+            return self.evaluate_method_call(recv_expr, method, args);
+        }
+
+        // Otherwise, look up function/proc in environment
+        let func_opt = self.env.borrow().get(method);
+
+        match func_opt {
+            Some(Value::Proc(proc_def)) => self.call_proc(&proc_def, args),
+            Some(Value::Lambda(params, body, closure_env)) => {
+                self.call_lambda(&params, &body, &closure_env, args)
+            }
+            Some(_) => Err(format!("'{}' is not callable", method)),
+            None => Err(format!("Undefined function or procedure '{}'", method)),
+        }
+    }
+
+    #[instrument(skip(self))]
+    fn evaluate_method_call(
+        &mut self,
+        receiver_expr: &Expression,
+        method: &str,
+        args: &[Expression],
+    ) -> Result<Value, String> {
+        let receiver_val = self.evaluate_expression(receiver_expr)?;
+
+        match method {
+            // Array methods
+            "length" | "size" => match receiver_val {
+                Value::Array(arr) => Ok(Value::Integer(arr.borrow().len() as i64)),
+                Value::String(s) => Ok(Value::Integer(s.len() as i64)),
+                Value::Hash(hash) => Ok(Value::Integer(hash.borrow().len() as i64)),
+                _ => Err(format!("{:?} does not have a length method", receiver_val)),
+            },
+            "push" => match receiver_val {
+                Value::Array(arr) => {
+                    for arg in args {
+                        let val = self.evaluate_expression(arg)?;
+                        arr.borrow_mut().push(val);
+                    }
+                    Ok(Value::Array(arr))
+                }
+                _ => Err(format!("{:?} does not have a push method", receiver_val)),
+            },
+            "pop" => match receiver_val {
+                Value::Array(arr) => {
+                    let popped = arr.borrow_mut().pop().unwrap_or(Value::Nil);
+                    Ok(popped)
+                }
+                _ => Err(format!("{:?} does not have a pop method", receiver_val)),
+            },
+            // Struct constructor
+            "new" => match receiver_val {
+                Value::Struct(struct_def) => {
+                    let mut instance_fields = HashMap::new();
+
+                    // Initialize fields with nil
+                    for field in &struct_def.fields {
+                        instance_fields.insert(field.name.clone(), Value::Nil);
+                    }
+
+                    let instance = Value::Instance(
+                        struct_def.name.clone(),
+                        Rc::new(RefCell::new(instance_fields)),
+                    );
+
+                    Ok(instance)
+                }
+                _ => Err(format!("{:?} is not a struct", receiver_val)),
+            },
+            _ => Err(format!(
+                "Method '{}' not found on {:?}",
+                method, receiver_val
+            )),
+        }
+    }
+
+    #[instrument(skip(self))]
+    fn call_lambda(
+        &mut self,
+        params: &[String],
+        body: &[Statement],
+        closure_env: &Rc<RefCell<Environment>>,
+        args: &[Expression],
+    ) -> Result<Value, String> {
+        if args.len() != params.len() {
+            return Err(format!(
+                "Lambda expects {} arguments but got {}",
+                params.len(),
+                args.len()
+            ));
+        }
+
+        // Save current environment and switch to closure environment
+        let saved_env = Rc::clone(&self.env);
+        self.env = Rc::clone(closure_env);
+
+        self.env.borrow_mut().push_scope();
+
+        for (param, arg) in params.iter().zip(args.iter()) {
+            let value = self.evaluate_expression(arg)?;
+            self.env.borrow_mut().define(param.clone(), value);
+        }
+
+        let result = match self.execute_block(body)? {
+            FlowControl::Return(val) => val,
+            FlowControl::None => Value::Nil,
+            _ => {
+                self.env.borrow_mut().pop_scope();
+                self.env = saved_env;
+                return Err("Unexpected break or continue in lambda".to_string());
+            }
+        };
+
+        self.env.borrow_mut().pop_scope();
+        self.env = saved_env;
+        Ok(result)
     }
 
     #[instrument(skip(self))]
