@@ -251,6 +251,11 @@ impl Interpreter {
                 self.env.borrow_mut().define(struct_def.name.clone(), value);
                 Ok(FlowControl::None)
             }
+            Statement::ActorDef(actor_def) => {
+                let value = Value::Struct(actor_def.clone());
+                self.env.borrow_mut().define(actor_def.name.clone(), value);
+                Ok(FlowControl::None)
+            }
             Statement::If(if_stmt) => self.execute_if(if_stmt),
             Statement::For(for_stmt) => self.execute_for(for_stmt),
             Statement::Return(expr) => {

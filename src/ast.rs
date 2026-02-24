@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{collections::HashMap, fmt};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Attribute {
@@ -34,6 +34,7 @@ pub enum Statement {
     ColonAssignment(String, Expression),
     ProcDef(ProcDef),
     StructDef(StructDef),
+    SystemDef(SystemDef),
     Import(String),
     If(IfStatement),
     For(ForStatement),
@@ -63,6 +64,14 @@ pub struct ProcDef {
 pub struct StructDef {
     pub name: String,
     pub fields: Vec<Field>,
+    pub attributes: Vec<Attribute>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SystemDef {
+    pub name: String,
+    pub fields: Vec<Field>,
+    pub handlers: HashMap<String, ProcDef>,
     pub attributes: Vec<Attribute>,
 }
 
