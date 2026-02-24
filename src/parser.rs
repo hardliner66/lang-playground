@@ -3,7 +3,7 @@ use std::fmt::Display;
 use tracing::{info, instrument};
 
 use crate::ast::*;
-use crate::ast::{Attribute, AttributeArg, ModuleDef};
+use crate::ast::{Attribute, AttributeArg};
 use crate::lexer::{Lexer, Token};
 
 pub struct Parser {
@@ -105,7 +105,7 @@ impl Parser {
             self.skip_newlines();
 
             match &self.current_token {
-                Token::End | Token::Elsif | Token::Else | Token::Eof | Token::RightBrace => break,
+                Token::Else | Token::Eof | Token::RightBrace => break,
                 _ => {}
             }
 
@@ -126,7 +126,7 @@ impl Parser {
             self.skip_newlines();
 
             match &self.current_token {
-                Token::End | Token::Elsif | Token::Else | Token::Eof | Token::RightBrace => break,
+                Token::Else | Token::Eof | Token::RightBrace => break,
                 _ => {}
             }
 
@@ -249,35 +249,34 @@ impl Parser {
         };
 
         match &self.current_token {
-            Token::Def => self.parse_method_def(attributes),
-            Token::System => self.parse_system_def(attributes),
-            Token::Message => self.parse_message_def(attributes),
-            Token::Module => self.parse_module_def(attributes),
-            Token::Require => self.parse_require_statement(),
+            Token::Import => self.parse_import_statement(),
             Token::If => {
                 if !attributes.is_empty() {
                     return Ok(Statement::Attributes(attributes));
                 }
                 self.parse_if_statement()
             }
-            Token::Unless => self.parse_unless_statement(),
-            Token::While => self.parse_while_statement(),
-            Token::Until => self.parse_until_statement(),
             Token::For => self.parse_for_statement(),
             Token::Return => self.parse_return_statement(),
             Token::Break => {
                 self.advance();
                 Ok(Statement::Break)
             }
-            Token::Next => {
+            Token::Continue => {
                 self.advance();
-                Ok(Statement::Next)
+                Ok(Statement::Continue)
             }
+            Token::Defer => self.parse_defer_statement(),
             Token::Identifier(_) => {
                 if !attributes.is_empty() {
                     return Ok(Statement::Attributes(attributes));
                 }
-                if self.peek(1) == Token::Assign {
+                // Check for :: which means declaration (proc or struct)
+                if self.peek(1) == Token::DoubleColon {
+                    self.parse_declaration(attributes)
+                } else if self.peek(1) == Token::ColonAssign {
+                    self.parse_colon_assignment()
+                } else if self.peek(1) == Token::Assign {
                     self.parse_assignment()
                 } else {
                     let expr = self.parse_expression()?;
@@ -304,8 +303,8 @@ impl Parser {
             Vec::new()
         };
 
-        let name = if let Token::Identifier(name) = &self.current_token {
-            let name = name.clone();
+        let name = if let Token::Identifier(n) = &self.current_token {
+            let name = n.clone();
             self.advance();
             name
         } else {
@@ -317,8 +316,8 @@ impl Parser {
 
         self.expect(Token::Colon)?;
 
-        let typ = if let Token::Identifier(typ) = &self.current_token {
-            let typ = typ.clone();
+        let typ = if let Token::Identifier(t) = &self.current_token {
+            let typ = t.clone();
             self.advance();
             typ
         } else {
@@ -328,28 +327,51 @@ impl Parser {
             )));
         };
 
+        // Skip optional comma
+        if self.current_token == Token::Comma {
+            self.advance();
+        }
+
         Ok(Field {
-            name: name.clone(),
-            typ: typ.clone(),
+            name,
+            typ,
             attributes,
         })
     }
 
     #[instrument(skip(self))]
-    fn parse_method_def(&mut self, attributes: Vec<Attribute>) -> ParseResult<Statement> {
-        self.expect(Token::Def)?;
-        self.skip_newlines();
-
+    fn parse_declaration(&mut self, attributes: Vec<Attribute>) -> ParseResult<Statement> {
+        // name :: proc(...) or name :: struct {...}
         let name = if let Token::Identifier(n) = &self.current_token {
             let name = n.clone();
             self.advance();
             name
         } else {
             return Err(ParseError::new(format!(
-                "Expected method name, got {:?}",
+                "Expected identifier, got {:?}",
                 self.current_token
             )));
         };
+
+        self.expect(Token::DoubleColon)?;
+
+        match &self.current_token {
+            Token::Proc => self.parse_proc_def(name, attributes),
+            Token::Struct => self.parse_struct_def(name, attributes),
+            _ => Err(ParseError::new(format!(
+                "Expected 'proc' or 'struct' after '::', got {:?}",
+                self.current_token
+            ))),
+        }
+    }
+
+    #[instrument(skip(self))]
+    fn parse_proc_def(
+        &mut self,
+        name: String,
+        attributes: Vec<Attribute>,
+    ) -> ParseResult<Statement> {
+        self.expect(Token::Proc)?;
 
         let params = if self.current_token == Token::LeftParen {
             self.advance();
@@ -360,33 +382,96 @@ impl Parser {
             Vec::new()
         };
 
+        // Parse optional return type: -> type
+        let return_type = if self.current_token == Token::Arrow {
+            self.advance();
+            if let Token::Identifier(t) = &self.current_token {
+                let typ = t.clone();
+                self.advance();
+                Some(typ)
+            } else {
+                return Err(ParseError::new(format!(
+                    "Expected return type after '->', got {:?}",
+                    self.current_token
+                )));
+            }
+        } else {
+            None
+        };
+
+        self.skip_newlines();
+        self.expect(Token::LeftBrace)?;
         self.skip_newlines();
 
         let body = self.parse_statements()?;
 
-        self.expect(Token::End)?;
+        self.expect(Token::RightBrace)?;
 
-        Ok(Statement::MethodDef(MethodDef {
+        Ok(Statement::ProcDef(ProcDef {
             name,
             params,
+            return_type,
             body,
             attributes,
         }))
     }
 
     #[instrument(skip(self))]
-    fn parse_parameter_list(&mut self) -> ParseResult<Vec<String>> {
+    fn parse_parameter_list(&mut self) -> ParseResult<Vec<Parameter>> {
         let mut params = Vec::new();
 
         if let Token::Identifier(name) = &self.current_token {
-            params.push(name.clone());
+            let param_name = name.clone();
             self.advance();
+
+            // Parse optional type annotation: name: type
+            let param_type = if self.current_token == Token::Colon {
+                self.advance();
+                if let Token::Identifier(t) = &self.current_token {
+                    let typ = t.clone();
+                    self.advance();
+                    Some(typ)
+                } else {
+                    return Err(ParseError::new(format!(
+                        "Expected type after ':', got {:?}",
+                        self.current_token
+                    )));
+                }
+            } else {
+                None
+            };
+
+            params.push(Parameter {
+                name: param_name,
+                typ: param_type,
+            });
 
             while self.current_token == Token::Comma {
                 self.advance();
                 if let Token::Identifier(name) = &self.current_token {
-                    params.push(name.clone());
+                    let param_name = name.clone();
                     self.advance();
+
+                    let param_type = if self.current_token == Token::Colon {
+                        self.advance();
+                        if let Token::Identifier(t) = &self.current_token {
+                            let typ = t.clone();
+                            self.advance();
+                            Some(typ)
+                        } else {
+                            return Err(ParseError::new(format!(
+                                "Expected type after ':', got {:?}",
+                                self.current_token
+                            )));
+                        }
+                    } else {
+                        None
+                    };
+
+                    params.push(Parameter {
+                        name: param_name,
+                        typ: param_type,
+                    });
                 } else {
                     return Err(ParseError::new(format!(
                         "Expected parameter name, got {:?}",
@@ -400,57 +485,22 @@ impl Parser {
     }
 
     #[instrument(skip(self))]
-    fn parse_system_def(&mut self, attributes: Vec<Attribute>) -> ParseResult<Statement> {
-        self.expect(Token::System)?;
+    fn parse_struct_def(
+        &mut self,
+        name: String,
+        attributes: Vec<Attribute>,
+    ) -> ParseResult<Statement> {
+        self.expect(Token::Struct)?;
         self.skip_newlines();
 
-        let name = if let Token::Identifier(n) = &self.current_token {
-            let name = n.clone();
-            self.advance();
-            name
-        } else {
-            return Err(ParseError::new(format!(
-                "Expected class name, got {:?}",
-                self.current_token
-            )));
-        };
-
-        self.skip_newlines();
-
-        let body = self.parse_statements()?;
-
-        self.expect(Token::End)?;
-
-        Ok(Statement::SystemDef(SystemDef {
-            name,
-            body,
-            attributes,
-        }))
-    }
-
-    #[instrument(skip(self))]
-    fn parse_message_def(&mut self, attributes: Vec<Attribute>) -> ParseResult<Statement> {
-        self.expect(Token::Message)?;
-        self.skip_newlines();
-
-        let name = if let Token::Identifier(n) = &self.current_token {
-            let name = n.clone();
-            self.advance();
-            name
-        } else {
-            return Err(ParseError::new(format!(
-                "Expected class name, got {:?}",
-                self.current_token
-            )));
-        };
-
+        self.expect(Token::LeftBrace)?;
         self.skip_newlines();
 
         let fields = self.parse_fields()?;
 
-        self.expect(Token::End)?;
+        self.expect(Token::RightBrace)?;
 
-        Ok(Statement::MessageDef(MessageDef {
+        Ok(Statement::StructDef(StructDef {
             name,
             fields,
             attributes,
@@ -465,38 +515,30 @@ impl Parser {
         let condition = self.parse_expression()?;
         self.skip_newlines();
 
-        if self.current_token == Token::Identifier("then".to_string()) {
-            self.advance();
-        }
+        self.expect(Token::LeftBrace)?;
         self.skip_newlines();
 
         let then_block = self.parse_statements()?;
 
-        let mut elsif_blocks = Vec::new();
-        while self.current_token == Token::Elsif {
-            self.advance();
-            self.skip_newlines();
-            let elsif_condition = self.parse_expression()?;
-            self.skip_newlines();
+        self.expect(Token::RightBrace)?;
+        self.skip_newlines();
 
-            if self.current_token == Token::Identifier("then".to_string()) {
-                self.advance();
-            }
-            self.skip_newlines();
-
-            let elsif_body = self.parse_statements()?;
-            elsif_blocks.push((elsif_condition, elsif_body));
-        }
-
+        let elsif_blocks = Vec::new();
         let else_block = if self.current_token == Token::Else {
             self.advance();
             self.skip_newlines();
-            Some(self.parse_statements()?)
+
+            self.expect(Token::LeftBrace)?;
+            self.skip_newlines();
+
+            let else_body = self.parse_statements()?;
+
+            self.expect(Token::RightBrace)?;
+
+            Some(else_body)
         } else {
             None
         };
-
-        self.expect(Token::End)?;
 
         Ok(Statement::If(IfStatement {
             condition,
@@ -507,37 +549,8 @@ impl Parser {
     }
 
     #[instrument(skip(self))]
-    fn parse_module_def(&mut self, attributes: Vec<Attribute>) -> ParseResult<Statement> {
-        self.expect(Token::Module)?;
-        self.skip_newlines();
-
-        let name = if let Token::Identifier(n) = &self.current_token {
-            let name = n.clone();
-            self.advance();
-            name
-        } else {
-            return Err(ParseError::new(format!(
-                "Expected module name, got {:?}",
-                self.current_token
-            )));
-        };
-
-        self.skip_newlines();
-
-        let body = self.parse_statements()?;
-
-        self.expect(Token::End)?;
-
-        Ok(Statement::ModuleDef(ModuleDef {
-            name,
-            body,
-            attributes,
-        }))
-    }
-
-    #[instrument(skip(self))]
-    fn parse_require_statement(&mut self) -> ParseResult<Statement> {
-        self.expect(Token::Require)?;
+    fn parse_import_statement(&mut self) -> ParseResult<Statement> {
+        self.expect(Token::Import)?;
 
         let path = if let Token::String(s) = &self.current_token {
             let path = s.clone();
@@ -545,12 +558,38 @@ impl Parser {
             path
         } else {
             return Err(ParseError::new(format!(
-                "Expected string path after require, got {:?}",
+                "Expected string, got {:?}",
                 self.current_token
             )));
         };
 
-        Ok(Statement::Require(path))
+        Ok(Statement::Import(path))
+    }
+
+    #[instrument(skip(self))]
+    fn parse_colon_assignment(&mut self) -> ParseResult<Statement> {
+        let name = if let Token::Identifier(n) = &self.current_token {
+            let name = n.clone();
+            self.advance();
+            name
+        } else {
+            return Err(ParseError::new(format!(
+                "Expected identifier, got {:?}",
+                self.current_token
+            )));
+        };
+
+        self.expect(Token::ColonAssign)?;
+        let value = self.parse_expression()?;
+
+        Ok(Statement::ColonAssignment(name, value))
+    }
+
+    #[instrument(skip(self))]
+    fn parse_defer_statement(&mut self) -> ParseResult<Statement> {
+        self.expect(Token::Defer)?;
+        let stmt = self.parse_statement()?;
+        Ok(Statement::Defer(Box::new(stmt)))
     }
 
     #[instrument(skip(self))]
@@ -570,66 +609,6 @@ impl Parser {
         let expr = self.parse_expression()?;
 
         Ok(Statement::Assignment(name, expr))
-    }
-
-    #[instrument(skip(self))]
-    fn parse_unless_statement(&mut self) -> ParseResult<Statement> {
-        self.expect(Token::Unless)?;
-        self.skip_newlines();
-
-        let condition = self.parse_expression()?;
-        self.skip_newlines();
-
-        let body = self.parse_statements()?;
-        self.expect(Token::End)?;
-
-        Ok(Statement::If(IfStatement {
-            condition: Expression::Unary(UnaryOp::Not, Box::new(condition)),
-            then_block: body,
-            elsif_blocks: Vec::new(),
-            else_block: None,
-        }))
-    }
-
-    #[instrument(skip(self))]
-    fn parse_while_statement(&mut self) -> ParseResult<Statement> {
-        self.expect(Token::While)?;
-        self.skip_newlines();
-
-        let condition = self.parse_expression()?;
-        self.skip_newlines();
-
-        if self.current_token == Token::Do {
-            self.advance();
-        }
-        self.skip_newlines();
-
-        let body = self.parse_statements()?;
-        self.expect(Token::End)?;
-
-        Ok(Statement::While(WhileStatement { condition, body }))
-    }
-
-    #[instrument(skip(self))]
-    fn parse_until_statement(&mut self) -> ParseResult<Statement> {
-        self.expect(Token::Until)?;
-        self.skip_newlines();
-
-        let condition = self.parse_expression()?;
-        self.skip_newlines();
-
-        if self.current_token == Token::Do {
-            self.advance();
-        }
-        self.skip_newlines();
-
-        let body = self.parse_statements()?;
-        self.expect(Token::End)?;
-
-        Ok(Statement::While(WhileStatement {
-            condition: Expression::Unary(UnaryOp::Not, Box::new(condition)),
-            body,
-        }))
     }
 
     #[instrument(skip(self))]
@@ -654,13 +633,12 @@ impl Parser {
         let iterable = self.parse_expression()?;
         self.skip_newlines();
 
-        if self.current_token == Token::Do {
-            self.advance();
-        }
+        self.expect(Token::LeftBrace)?;
         self.skip_newlines();
 
         let body = self.parse_statements()?;
-        self.expect(Token::End)?;
+
+        self.expect(Token::RightBrace)?;
 
         Ok(Statement::For(ForStatement {
             variable,
@@ -674,7 +652,7 @@ impl Parser {
         self.expect(Token::Return)?;
 
         let expr = match &self.current_token {
-            Token::Newline | Token::Semicolon | Token::End | Token::Eof => None,
+            Token::Newline | Token::Semicolon | Token::Eof | Token::RightBrace => None,
             _ => Some(self.parse_expression()?),
         };
 
@@ -945,7 +923,6 @@ impl Parser {
                     };
 
                     expr = Expression::Call {
-                        receiver: Box::new(expr),
                         method: method_name,
                         args,
                     };
@@ -1034,7 +1011,6 @@ impl Parser {
 
                         let last_part = namespace_parts.pop().unwrap();
                         return Ok(Expression::Call {
-                            receiver: Box::new(Expression::NamespaceAccess(namespace_parts)),
                             method: last_part,
                             args,
                         });
@@ -1047,11 +1023,7 @@ impl Parser {
                     self.advance();
                     let args = self.parse_argument_list()?;
                     self.expect(Token::RightParen)?;
-                    Ok(Expression::Call {
-                        receiver: Box::new(Expression::Identifier("self".to_string())),
-                        method: name,
-                        args,
-                    })
+                    Ok(Expression::Call { method: name, args })
                 } else {
                     Ok(Expression::Identifier(name))
                 }
@@ -1074,37 +1046,12 @@ impl Parser {
                 self.expect(Token::RightBrace)?;
                 Ok(Expression::Hash(pairs))
             }
-            Token::Lambda => {
-                self.advance();
-                self.parse_lambda()
-            }
+
             _ => Err(ParseError::new(format!(
                 "Unexpected token in expression: {:?}",
                 self.current_token
             ))),
         }
-    }
-
-    #[instrument(skip(self))]
-    fn parse_lambda(&mut self) -> ParseResult<Expression> {
-        self.expect(Token::LeftBrace)?;
-        self.skip_newlines();
-
-        let params = if self.current_token == Token::Pipe {
-            self.advance();
-            let params = self.parse_parameter_list()?;
-            self.expect(Token::Pipe)?;
-            self.skip_newlines();
-            params
-        } else {
-            Vec::new()
-        };
-
-        let body = self.parse_statements()?;
-
-        self.expect(Token::RightBrace)?;
-
-        Ok(Expression::Lambda { params, body })
     }
 
     #[instrument(skip(self))]
@@ -1250,19 +1197,19 @@ mod tests {
 
     #[test]
     fn test_parse_method_def() {
-        let mut parser = Parser::new("def add(a, b)\n  a + b\nend");
+        let mut parser = Parser::new("add :: proc(a: int, b: int) { a + b }");
         let result = parser.parse().unwrap();
         match result {
             Program::Statements(stmts) => {
                 assert_eq!(stmts.len(), 1);
                 match &stmts[0] {
-                    Statement::MethodDef(method) => {
-                        assert_eq!(method.name, "add");
-                        assert_eq!(method.params.len(), 2);
-                        assert_eq!(method.params[0], "a");
-                        assert_eq!(method.params[1], "b");
+                    Statement::ProcDef(proc_def) => {
+                        assert_eq!(proc_def.name, "add");
+                        assert_eq!(proc_def.params.len(), 2);
+                        assert_eq!(proc_def.params[0].name, "a");
+                        assert_eq!(proc_def.params[1].name, "b");
                     }
-                    _ => panic!("Expected method definition"),
+                    _ => panic!("Expected proc definition"),
                 }
             }
         }
@@ -1270,7 +1217,7 @@ mod tests {
 
     #[test]
     fn test_parse_if_statement() {
-        let mut parser = Parser::new("if x > 0\n  println(x)\nend");
+        let mut parser = Parser::new("if x > 0 { println(x) }");
         let result = parser.parse().unwrap();
         match result {
             Program::Statements(stmts) => {
@@ -1346,13 +1293,13 @@ mod tests {
             Program::Statements(stmts) => {
                 assert_eq!(stmts.len(), 1);
                 match &stmts[0] {
-                    Statement::MethodDef(method) => {
-                        assert_eq!(method.name, "foo");
-                        assert_eq!(method.attributes.len(), 2);
-                        assert_eq!(method.attributes[0].name, "inline");
-                        assert_eq!(method.attributes[1].name, "test");
+                    Statement::ProcDef(proc_def) => {
+                        assert_eq!(proc_def.name, "foo");
+                        assert_eq!(proc_def.attributes.len(), 2);
+                        assert_eq!(proc_def.attributes[0].name, "inline");
+                        assert_eq!(proc_def.attributes[1].name, "private");
                     }
-                    _ => panic!("Expected method definition"),
+                    _ => panic!("Expected proc definition with attributes"),
                 }
             }
         }
@@ -1360,19 +1307,18 @@ mod tests {
 
     #[test]
     fn test_parse_attributes_with_args() {
-        let mut parser =
-            Parser::new("#[deprecated(since=\"1.0\", note=\"Use new_fn\")]\ndef old_fn()\nend");
+        let mut parser = Parser::new("#[deprecated(since=\"1.0\")]\nold_fn :: proc() { }");
         let result = parser.parse().unwrap();
         match result {
             Program::Statements(stmts) => {
                 assert_eq!(stmts.len(), 1);
                 match &stmts[0] {
-                    Statement::MethodDef(method) => {
-                        assert_eq!(method.name, "old_fn");
-                        assert_eq!(method.attributes.len(), 1);
-                        assert_eq!(method.attributes[0].name, "deprecated");
-                        assert_eq!(method.attributes[0].args.len(), 2);
-                        match &method.attributes[0].args[0] {
+                    Statement::ProcDef(proc_def) => {
+                        assert_eq!(proc_def.name, "old_fn");
+                        assert_eq!(proc_def.attributes.len(), 1);
+                        assert_eq!(proc_def.attributes[0].name, "deprecated");
+                        assert_eq!(proc_def.attributes[0].args.len(), 1);
+                        match &proc_def.attributes[0].args[0] {
                             AttributeArg::KeyValue(key, value) => {
                                 assert_eq!(key, "since");
                                 match &**value {
@@ -1383,62 +1329,45 @@ mod tests {
                             _ => panic!("Expected key-value pair"),
                         }
                     }
-                    _ => panic!("Expected method definition"),
+                    _ => panic!("Expected proc definition"),
                 }
             }
         }
     }
 
     #[test]
-    fn test_parse_attributes_on_class() {
-        let mut parser = Parser::new("#[derive(Debug)]\nclass Foo\nend");
+    fn test_parse_attributes_on_struct() {
+        let mut parser = Parser::new("#[derive(Debug)]\nFoo :: struct { }");
         let result = parser.parse().unwrap();
         match result {
             Program::Statements(stmts) => {
                 assert_eq!(stmts.len(), 1);
                 match &stmts[0] {
-                    Statement::SystemDef(class) => {
-                        assert_eq!(class.name, "Foo");
-                        assert_eq!(class.attributes.len(), 1);
-                        assert_eq!(class.attributes[0].name, "derive");
-                        assert_eq!(class.attributes[0].args.len(), 1);
+                    Statement::StructDef(struct_def) => {
+                        assert_eq!(struct_def.name, "Foo");
+                        assert_eq!(struct_def.attributes.len(), 1);
+                        assert_eq!(struct_def.attributes[0].name, "derive");
+                        assert_eq!(struct_def.attributes[0].args.len(), 1);
                     }
-                    _ => panic!("Expected class definition"),
+                    _ => panic!("Expected struct definition"),
                 }
             }
         }
     }
 
     #[test]
-    fn test_parse_module() {
-        let mut parser = Parser::new("module MyModule\n  def foo()\n    42\n  end\nend");
+    fn test_parse_import() {
+        let code = r#"import "math""#;
+        let mut parser = Parser::new(code);
         let result = parser.parse().unwrap();
         match result {
             Program::Statements(stmts) => {
                 assert_eq!(stmts.len(), 1);
                 match &stmts[0] {
-                    Statement::ModuleDef(module) => {
-                        assert_eq!(module.name, "MyModule");
-                        assert_eq!(module.body.len(), 1);
+                    Statement::Import(path) => {
+                        assert_eq!(path, "math");
                     }
-                    _ => panic!("Expected module definition"),
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn test_parse_require() {
-        let mut parser = Parser::new("require \"path/to/file\"");
-        let result = parser.parse().unwrap();
-        match result {
-            Program::Statements(stmts) => {
-                assert_eq!(stmts.len(), 1);
-                match &stmts[0] {
-                    Statement::Require(path) => {
-                        assert_eq!(path, "path/to/file");
-                    }
-                    _ => panic!("Expected require statement"),
+                    _ => panic!("Expected import statement"),
                 }
             }
         }

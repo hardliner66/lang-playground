@@ -16,29 +16,25 @@ pub enum Token {
 
     // Identifiers and Keywords
     Identifier(String),
-    Def,
-    End,
-    System,
-    Message,
-    Module,
-    Require,
+    Proc,
+    Struct,
+    Import,
     If,
-    Elsif,
     Else,
-    Unless,
-    While,
-    Until,
     For,
     In,
-    Do,
     Break,
-    Next,
+    Continue,
     Return,
-    Lambda,
-    Yield,
-    Begin,
-    Rescue,
-    Ensure,
+    Defer,
+    When,
+    Case,
+    Where,
+    Distinct,
+    Using,
+    Cast,
+    Transmute,
+    AutoCast,
 
     // Operators
     Plus,
@@ -65,7 +61,9 @@ pub enum Token {
     RightShift,     // >>
     Range,          // ..
     ExclusiveRange, // ...
-    Arrow,          // =>
+    Arrow,          // ->
+    ColonAssign,    // :=
+    FatArrow,       // =>
 
     // Assignment
     Assign, // =
@@ -156,7 +154,8 @@ impl Lexer {
 
     #[instrument(skip(self))]
     fn skip_comment(&mut self) {
-        if self.current_char == Some('@') {
+        // Skip single-line comments starting with //
+        if self.current_char == Some('/') && self.peek(1) == Some('/') {
             while self.current_char.is_some() && self.current_char != Some('\n') {
                 self.advance();
             }
@@ -407,52 +406,33 @@ impl Lexer {
         }
 
         match ident.as_str() {
-            "def" => Token::Def,
-            "end" => Token::End,
-            "system" => Token::System,
-            "message" => Token::Message,
-            "module" => Token::Module,
-            "require" => Token::Require,
+            "proc" => Token::Proc,
+            "struct" => Token::Struct,
+            "import" => Token::Import,
             "if" => Token::If,
-            "elsif" => Token::Elsif,
             "else" => Token::Else,
-            "unless" => Token::Unless,
-            "while" => Token::While,
-            "until" => Token::Until,
             "for" => Token::For,
             "in" => Token::In,
-            "do" => Token::Do,
             "break" => Token::Break,
-            "next" => Token::Next,
+            "continue" => Token::Continue,
             "return" => Token::Return,
+            "defer" => Token::Defer,
+            "when" => Token::When,
+            "case" => Token::Case,
+            "where" => Token::Where,
+            "distinct" => Token::Distinct,
+            "using" => Token::Using,
+            "cast" => Token::Cast,
+            "transmute" => Token::Transmute,
+            "auto_cast" => Token::AutoCast,
             "true" => Token::True,
             "false" => Token::False,
             "nil" => Token::Nil,
-            "lambda" => Token::Lambda,
-            "yield" => Token::Yield,
-            "begin" => Token::Begin,
-            "rescue" => Token::Rescue,
-            "ensure" => Token::Ensure,
             _ => Token::Identifier(ident),
         }
     }
 
     #[instrument(ret, skip(self))]
-    fn read_symbol(&mut self) -> Token {
-        self.advance();
-        let mut symbol = String::new();
-
-        while let Some(ch) = self.current_char {
-            if ch.is_alphanumeric() || ch == '_' {
-                symbol.push(ch);
-                self.advance();
-            } else {
-                break;
-            }
-        }
-
-        Token::Symbol(symbol)
-    }
 
     pub fn next_token(&mut self) -> Token {
         loop {
@@ -484,10 +464,6 @@ impl Lexer {
                 self.advance();
                 Token::Plus
             }
-            Some('-') => {
-                self.advance();
-                Token::Minus
-            }
             Some('*') => {
                 self.advance();
                 if self.current_char == Some('*') {
@@ -497,9 +473,16 @@ impl Lexer {
                     Token::Star
                 }
             }
+
             Some('/') => {
-                self.advance();
-                Token::Slash
+                // Check for comment
+                if self.peek(1) == Some('/') {
+                    self.skip_comment();
+                    self.next_token()
+                } else {
+                    self.advance();
+                    Token::Slash
+                }
             }
             Some('%') => {
                 self.advance();
@@ -512,7 +495,7 @@ impl Lexer {
                     Token::Equal
                 } else if self.current_char == Some('>') {
                     self.advance();
-                    Token::Arrow
+                    Token::FatArrow
                 } else {
                     Token::Assign
                 }
@@ -633,18 +616,39 @@ impl Lexer {
                 Token::Comma
             }
             Some(':') => {
-                if self.peek(1) == Some(':') {
-                    self.advance();
+                self.advance();
+                if self.current_char == Some(':') {
                     self.advance();
                     Token::DoubleColon
+                } else if self.current_char == Some('=') {
+                    self.advance();
+                    Token::ColonAssign
                 } else if self
-                    .peek(1)
+                    .current_char
                     .map_or(false, |c| c.is_alphabetic() || c == '_')
                 {
-                    self.read_symbol()
+                    // Read symbol (e.g., :symbol)
+                    let mut symbol = String::new();
+                    while let Some(ch) = self.current_char {
+                        if ch.is_alphanumeric() || ch == '_' {
+                            symbol.push(ch);
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                    Token::Symbol(symbol)
                 } else {
-                    self.advance();
                     Token::Colon
+                }
+            }
+            Some('-') => {
+                self.advance();
+                if self.current_char == Some('>') {
+                    self.advance();
+                    Token::Arrow
+                } else {
+                    Token::Minus
                 }
             }
             Some('?') => {
@@ -696,13 +700,13 @@ mod tests {
 
     #[test]
     fn test_keywords() {
-        let mut lexer = Lexer::new("def end system if elsif else");
-        assert_eq!(lexer.next_token(), Token::Def);
-        assert_eq!(lexer.next_token(), Token::End);
-        assert_eq!(lexer.next_token(), Token::System);
+        let mut lexer = Lexer::new("proc struct import if else for");
+        assert_eq!(lexer.next_token(), Token::Proc);
+        assert_eq!(lexer.next_token(), Token::Struct);
+        assert_eq!(lexer.next_token(), Token::Import);
         assert_eq!(lexer.next_token(), Token::If);
-        assert_eq!(lexer.next_token(), Token::Elsif);
         assert_eq!(lexer.next_token(), Token::Else);
+        assert_eq!(lexer.next_token(), Token::For);
     }
 
     #[test]

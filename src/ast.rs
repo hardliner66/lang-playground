@@ -31,46 +31,38 @@ pub struct Field {
 pub enum Statement {
     Expression(Expression),
     Assignment(String, Expression),
-    MethodDef(MethodDef),
-    SystemDef(SystemDef),
-    MessageDef(MessageDef),
-    ModuleDef(ModuleDef),
-    Require(String),
+    ColonAssignment(String, Expression),
+    ProcDef(ProcDef),
+    StructDef(StructDef),
+    Import(String),
     If(IfStatement),
-    While(WhileStatement),
     For(ForStatement),
     Return(Option<Expression>),
     Break,
-    Next,
+    Continue,
+    Defer(Box<Statement>),
     Attributes(Vec<Attribute>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct MethodDef {
+pub struct Parameter {
     pub name: String,
-    pub params: Vec<String>,
+    pub typ: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProcDef {
+    pub name: String,
+    pub params: Vec<Parameter>,
+    pub return_type: Option<String>,
     pub body: Vec<Statement>,
     pub attributes: Vec<Attribute>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct SystemDef {
-    pub name: String,
-    pub body: Vec<Statement>,
-    pub attributes: Vec<Attribute>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct MessageDef {
+pub struct StructDef {
     pub name: String,
     pub fields: Vec<Field>,
-    pub attributes: Vec<Attribute>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ModuleDef {
-    pub name: String,
-    pub body: Vec<Statement>,
     pub attributes: Vec<Attribute>,
 }
 
@@ -80,12 +72,6 @@ pub struct IfStatement {
     pub then_block: Vec<Statement>,
     pub elsif_blocks: Vec<(Expression, Vec<Statement>)>,
     pub else_block: Option<Vec<Statement>>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct WhileStatement {
-    pub condition: Expression,
-    pub body: Vec<Statement>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -116,7 +102,6 @@ pub enum Expression {
     Binary(BinaryOp, Box<Expression>, Box<Expression>),
     Unary(UnaryOp, Box<Expression>),
     Call {
-        receiver: Box<Expression>,
         method: String,
         args: Vec<Expression>,
     },
@@ -232,12 +217,8 @@ impl fmt::Display for Expression {
             Expression::Unary(op, expr) => {
                 write!(f, "({:?} {})", op, expr)
             }
-            Expression::Call {
-                receiver,
-                method,
-                args,
-            } => {
-                write!(f, "{}.{}(", receiver, method)?;
+            Expression::Call { method, args } => {
+                write!(f, "{}(", method)?;
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;

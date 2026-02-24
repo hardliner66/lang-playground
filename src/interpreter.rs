@@ -21,9 +21,8 @@ pub enum Value {
     Array(Rc<RefCell<Vec<Value>>>),
     Hash(Rc<RefCell<HashMap<String, Value>>>),
     Lambda(Vec<String>, Vec<Statement>, Rc<RefCell<Environment>>),
-    Method(MethodDef),
-    System(SystemDef),
-    Message(MessageDef),
+    Proc(ProcDef),
+    Struct(StructDef),
     Instance(String, Rc<RefCell<HashMap<String, Value>>>),
 }
 
@@ -73,9 +72,8 @@ impl Value {
                 format!("{{{}}}", pairs.join(", "))
             }
             Value::Lambda(_, _, _) => "#<Lambda>".to_string(),
-            Value::Method(m) => format!("#<Method: {}>", m.name),
-            Value::System(s) => format!("#<System: {}>", s.name),
-            Value::Message(m) => format!("#<Message: {}>", m.name),
+            Value::Proc(p) => format!("#<Proc: {}>", p.name),
+            Value::Struct(s) => format!("#<Struct: {}>", s.name),
             Value::Instance(name, _) => format!("#<Instance of {}>", name),
         }
     }
@@ -170,15 +168,12 @@ pub enum FlowControl {
     None,
     Return(Value),
     Break,
-    Next,
+    Continue,
 }
 
 pub struct Interpreter {
     debug: bool,
     env: Rc<RefCell<Environment>>,
-    systems: HashMap<String, SystemDef>,
-    messages: HashMap<String, MessageDef>,
-    modules: HashMap<String, ModuleDef>,
     search_paths: Vec<PathBuf>,
     output: Vec<String>,
     current_file: Option<PathBuf>,
@@ -190,9 +185,6 @@ impl Interpreter {
         let mut interpreter = Interpreter {
             debug: false,
             env: Rc::new(RefCell::new(Environment::new())),
-            systems: HashMap::new(),
-            messages: HashMap::new(),
-            modules: HashMap::new(),
             output: Vec::new(),
             current_file: path,
             search_paths: search_paths,
@@ -205,15 +197,16 @@ impl Interpreter {
 
     #[instrument(skip(self))]
     fn register_builtins(&mut self) {
-        let println_method = MethodDef {
+        let println_proc = ProcDef {
             name: "println".to_string(),
             params: vec![],
+            return_type: None,
             body: vec![],
             attributes: vec![],
         };
         self.env
             .borrow_mut()
-            .define("println".to_string(), Value::Method(println_method));
+            .define("println".to_string(), Value::Proc(println_proc));
     }
 
     #[instrument(skip(self))]
@@ -233,11 +226,14 @@ impl Interpreter {
                         _ => match self.execute_statement(statement)? {
                             FlowControl::Return(val) => return Ok(val),
                             FlowControl::Break => return Err("Break outside of loop".to_string()),
-                            FlowControl::Next => return Err("Next outside of loop".to_string()),
+                            FlowControl::Continue => {
+                                return Err("Continue outside of loop".to_string())
+                            }
                             FlowControl::None => {}
                         },
                     }
                 }
+                self.evaluate_call("main", &[])?;
                 Ok(result)
             }
         }
@@ -255,29 +251,22 @@ impl Interpreter {
                 self.env.borrow_mut().set(name, value)?;
                 Ok(FlowControl::None)
             }
-            Statement::MethodDef(method_def) => {
-                let value = Value::Method(method_def.clone());
-                self.env.borrow_mut().define(method_def.name.clone(), value);
+            Statement::ColonAssignment(name, expr) => {
+                let value = self.evaluate_expression(expr)?;
+                self.env.borrow_mut().define(name.clone(), value);
                 Ok(FlowControl::None)
             }
-            Statement::SystemDef(system_def) => {
-                self.systems
-                    .insert(system_def.name.clone(), system_def.clone());
-                let value = Value::System(system_def.clone());
-                self.env.borrow_mut().define(system_def.name.clone(), value);
+            Statement::ProcDef(proc_def) => {
+                let value = Value::Proc(proc_def.clone());
+                self.env.borrow_mut().define(proc_def.name.clone(), value);
                 Ok(FlowControl::None)
             }
-            Statement::MessageDef(message_def) => {
-                self.messages
-                    .insert(message_def.name.clone(), message_def.clone());
-                let value = Value::Message(message_def.clone());
-                self.env
-                    .borrow_mut()
-                    .define(message_def.name.clone(), value);
+            Statement::StructDef(struct_def) => {
+                let value = Value::Struct(struct_def.clone());
+                self.env.borrow_mut().define(struct_def.name.clone(), value);
                 Ok(FlowControl::None)
             }
             Statement::If(if_stmt) => self.execute_if(if_stmt),
-            Statement::While(while_stmt) => self.execute_while(while_stmt),
             Statement::For(for_stmt) => self.execute_for(for_stmt),
             Statement::Return(expr) => {
                 let value = if let Some(e) = expr {
@@ -288,17 +277,15 @@ impl Interpreter {
                 Ok(FlowControl::Return(value))
             }
             Statement::Break => Ok(FlowControl::Break),
-            Statement::Next => Ok(FlowControl::Next),
-            Statement::Attributes(_) => Ok(FlowControl::None),
-            Statement::ModuleDef(module_def) => {
-                self.modules
-                    .insert(module_def.name.clone(), module_def.clone());
-                for stmt in &module_def.body {
-                    self.execute_statement(stmt)?;
-                }
+            Statement::Continue => Ok(FlowControl::Continue),
+            Statement::Defer(stmt) => {
+                // For now, execute defer statements immediately
+                // In a full implementation, these would be deferred until scope exit
+                self.execute_statement(stmt)?;
                 Ok(FlowControl::None)
             }
-            Statement::Require(path) => {
+            Statement::Attributes(_) => Ok(FlowControl::None),
+            Statement::Import(path) => {
                 self.require_file(path)?;
                 Ok(FlowControl::None)
             }
@@ -328,24 +315,6 @@ impl Interpreter {
     }
 
     #[instrument(skip(self))]
-    fn execute_while(&mut self, while_stmt: &WhileStatement) -> Result<FlowControl, String> {
-        loop {
-            let condition = self.evaluate_expression(&while_stmt.condition)?;
-            if !condition.is_truthy() {
-                break;
-            }
-
-            match self.execute_block(&while_stmt.body)? {
-                FlowControl::Break => break,
-                FlowControl::Next => continue,
-                FlowControl::Return(val) => return Ok(FlowControl::Return(val)),
-                FlowControl::None => {}
-            }
-        }
-        Ok(FlowControl::None)
-    }
-
-    #[instrument(skip(self))]
     fn execute_for(&mut self, for_stmt: &ForStatement) -> Result<FlowControl, String> {
         let iterable = self.evaluate_expression(&for_stmt.iterable)?;
 
@@ -364,7 +333,7 @@ impl Interpreter {
 
             match self.execute_block(&for_stmt.body)? {
                 FlowControl::Break => break,
-                FlowControl::Next => continue,
+                FlowControl::Continue => continue,
                 FlowControl::Return(val) => {
                     self.env.borrow_mut().pop_scope();
                     return Ok(FlowControl::Return(val));
@@ -451,11 +420,7 @@ impl Interpreter {
             }
             Expression::Binary(op, left, right) => self.evaluate_binary_op(*op, left, right),
             Expression::Unary(op, expr) => self.evaluate_unary_op(*op, expr),
-            Expression::Call {
-                receiver,
-                method,
-                args,
-            } => self.evaluate_call(receiver, method, args),
+            Expression::Call { method, args } => self.evaluate_call(method, args),
             Expression::Index { expr, index } => self.evaluate_index(expr, index),
             Expression::Lambda { params, body } => Ok(Value::Lambda(
                 params.clone(),
@@ -472,7 +437,7 @@ impl Interpreter {
                             self.env.borrow_mut().pop_scope();
                             return Ok(val);
                         }
-                        FlowControl::Break | FlowControl::Next => {
+                        FlowControl::Break | FlowControl::Continue => {
                             self.env.borrow_mut().pop_scope();
                             return Err("Break/Next in block expression".to_string());
                         }
@@ -553,32 +518,7 @@ impl Interpreter {
     }
 
     #[instrument(skip(self))]
-    fn evaluate_call(
-        &mut self,
-        receiver: &Expression,
-        method: &str,
-        args: &[Expression],
-    ) -> Result<Value, String> {
-        if let Expression::Identifier(name) = receiver {
-            if name == "println" || name == "self" && method == "println" {
-                for arg in args {
-                    let val = self.evaluate_expression(arg)?;
-                    let output = val.to_string();
-                    self.output.push(output.clone());
-                    println!("{}", output);
-                }
-                return Ok(Value::Nil);
-            }
-
-            if name == "self" {
-                let method_opt = self.env.borrow().get(method);
-                if let Some(Value::Method(method_def)) = method_opt {
-                    return self.call_method(&method_def, args);
-                }
-                return Err(format!("Undefined function '{}'", method));
-            }
-        }
-
+    fn evaluate_call(&mut self, method: &str, args: &[Expression]) -> Result<Value, String> {
         if method == "println" {
             for arg in args {
                 let val = self.evaluate_expression(arg)?;
@@ -588,173 +528,35 @@ impl Interpreter {
             }
             return Ok(Value::Nil);
         }
-
-        let receiver_val = self.evaluate_expression(receiver)?;
-
-        match method {
-            "length" | "size" => match receiver_val {
-                Value::Array(arr) => Ok(Value::Integer(arr.borrow().len() as i64)),
-                Value::String(s) => Ok(Value::Integer(s.len() as i64)),
-                _ => Err(format!("{:?} does not have a length method", receiver_val)),
-            },
-            "push" => match receiver_val {
-                Value::Array(arr) => {
-                    for arg in args {
-                        let val = self.evaluate_expression(arg)?;
-                        arr.borrow_mut().push(val);
-                    }
-                    Ok(Value::Array(arr))
-                }
-                _ => Err(format!("{:?} does not have a push method", receiver_val)),
-            },
-            "new" => match receiver_val {
-                Value::System(system_def) => {
-                    let instance_fields = Rc::new(RefCell::new(HashMap::new()));
-                    let instance =
-                        Value::Instance(system_def.name.clone(), Rc::clone(&instance_fields));
-
-                    for stmt in &system_def.body {
-                        if let Statement::MethodDef(method_def) = stmt {
-                            if method_def.name == "initialize" {
-                                self.call_instance_method(&instance, method_def, args)?;
-                                break;
-                            }
-                        }
-                    }
-
-                    Ok(instance)
-                }
-                _ => Err(format!("{:?} is not a system", receiver_val)),
-            },
-            _ => match receiver_val {
-                Value::Instance(ref system_name, _) => {
-                    if let Some(system_def) = self.systems.get(system_name).cloned() {
-                        for stmt in &system_def.body {
-                            if let Statement::MethodDef(method_def) = stmt {
-                                if method_def.name == method {
-                                    return self.call_instance_method(
-                                        &receiver_val,
-                                        method_def,
-                                        args,
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    Err(format!(
-                        "Method '{}' not found on instance of {}",
-                        method, system_name
-                    ))
-                }
-                _ => {
-                    let method_opt = self.env.borrow().get(method);
-                    if let Some(Value::Method(method_def)) = method_opt {
-                        self.call_method(&method_def, args)
-                    } else {
-                        Err(format!("Method '{}' not found", method))
-                    }
-                }
-            },
-        }
+        Err(format!("Unknown Function {method}"))
     }
 
     #[instrument(skip(self))]
-    fn call_method(
-        &mut self,
-        method_def: &MethodDef,
-        args: &[Expression],
-    ) -> Result<Value, String> {
-        if args.len() != method_def.params.len() {
+    fn call_proc(&mut self, proc_def: &ProcDef, args: &[Expression]) -> Result<Value, String> {
+        if args.len() != proc_def.params.len() {
             return Err(format!(
-                "Method '{}' expects {} arguments but got {}",
-                method_def.name,
-                method_def.params.len(),
+                "Proc '{}' expects {} arguments but got {}",
+                proc_def.name,
+                proc_def.params.len(),
                 args.len()
             ));
         }
 
         self.env.borrow_mut().push_scope();
 
-        for (param, arg) in method_def.params.iter().zip(args) {
-            let val = self.evaluate_expression(arg)?;
-            self.env.borrow_mut().define(param.clone(), val);
+        for (param, arg) in proc_def.params.iter().zip(args.iter()) {
+            let value = self.evaluate_expression(arg)?;
+            self.env.borrow_mut().define(param.name.clone(), value);
         }
 
-        let result = match self.execute_block(&method_def.body)? {
+        let result = match self.execute_block(&proc_def.body)? {
             FlowControl::Return(val) => val,
             FlowControl::None => Value::Nil,
-            FlowControl::Break => return Err("Break outside of loop".to_string()),
-            FlowControl::Next => return Err("Next outside of loop".to_string()),
+            _ => return Err("Unexpected break or continue in proc".to_string()),
         };
 
         self.env.borrow_mut().pop_scope();
         Ok(result)
-    }
-
-    #[instrument(skip(self))]
-    fn call_instance_method(
-        &mut self,
-        instance: &Value,
-        method_def: &MethodDef,
-        args: &[Expression],
-    ) -> Result<Value, String> {
-        if args.len() != method_def.params.len() {
-            return Err(format!(
-                "Method '{}' expects {} arguments but got {}",
-                method_def.name,
-                method_def.params.len(),
-                args.len()
-            ));
-        }
-
-        if let Value::Instance(_, fields) = instance {
-            self.env.borrow_mut().push_scope();
-
-            for (name, value) in fields.borrow().iter() {
-                self.env.borrow_mut().define(name.clone(), value.clone());
-            }
-
-            for (param, arg) in method_def.params.iter().zip(args) {
-                let val = self.evaluate_expression(arg)?;
-                self.env.borrow_mut().define(param.clone(), val);
-            }
-
-            let result = match self.execute_block(&method_def.body)? {
-                FlowControl::Return(val) => val,
-                FlowControl::None => Value::Nil,
-                FlowControl::Break => return Err("Break outside of loop".to_string()),
-                FlowControl::Next => return Err("Next outside of loop".to_string()),
-            };
-
-            let field_names: Vec<String> = fields.borrow().keys().cloned().collect();
-            for name in field_names {
-                if let Some(new_val) = self.env.borrow().get(&name) {
-                    fields.borrow_mut().insert(name.clone(), new_val);
-                }
-            }
-
-            let new_instance_vars: Vec<(String, Value)> = {
-                let env_borrow = self.env.borrow();
-                if let Some(scope) = env_borrow.scopes.last() {
-                    scope
-                        .iter()
-                        .filter(|(name, _)| name.starts_with('@'))
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect()
-                } else {
-                    Vec::new()
-                }
-            };
-
-            for (name, value) in new_instance_vars {
-                fields.borrow_mut().insert(name, value);
-            }
-
-            self.env.borrow_mut().pop_scope();
-            Ok(result)
-        } else {
-            Err(format!("Expected instance, got {:?}", instance))
-        }
     }
 
     #[instrument(skip(self))]
@@ -979,7 +781,7 @@ impl Interpreter {
     #[instrument(skip(self))]
     fn resolve_path(&mut self, path: &str) -> Result<PathBuf, String> {
         let mut path = PathBuf::from(path);
-        path.set_extension("rb");
+        path.set_extension("odin");
         if std::fs::exists(&path).unwrap() {
             return Ok(PathBuf::from(path));
         }
@@ -1039,29 +841,7 @@ impl Interpreter {
             return Err("Empty namespace path".to_string());
         }
 
-        let first = &parts[0];
-
-        if self.modules.contains_key(first) {
-            if parts.len() == 1 {
-                return Ok(Value::Symbol(first.clone()));
-            }
-
-            let module_def = self.modules.get(first).unwrap();
-            let target = &parts[parts.len() - 1];
-
-            for stmt in &module_def.body {
-                match stmt {
-                    Statement::SystemDef(system_def) if &system_def.name == target => {
-                        return Ok(Value::System(system_def.clone()));
-                    }
-                    Statement::Assignment(name, _) if name == target => {
-                        return Ok(Value::Symbol(format!("{}::{}", first, target)));
-                    }
-                    _ => {}
-                }
-            }
-        }
-
+        // For now, just return a symbol representation of the namespace
         Ok(Value::Symbol(parts.join("::")))
     }
 
