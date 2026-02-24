@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use chrono::Local;
 use clap::Parser;
-use lang::{Interpreter, Program};
+use lang::{Interpreter, Program, Value};
 use log::info;
 
 #[derive(Parser)]
@@ -30,10 +30,8 @@ fn run(
     info!("RUNTIME...");
     info!("====================================");
     match interpreter.run(program) {
-        Ok(result) => {
-            println!("Result: {}", result.to_string());
-            Ok(())
-        }
+        Ok(Value::Integer(i)) => std::process::exit(i as i32),
+        Ok(_) => Ok(()),
         Err(err) => Err(anyhow::anyhow!(err)),
     }
 }

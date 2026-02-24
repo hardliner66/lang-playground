@@ -102,7 +102,6 @@ pub enum Expression {
     Binary(BinaryOp, Box<Expression>, Box<Expression>),
     Unary(UnaryOp, Box<Expression>),
     Call {
-        receiver: Option<Box<Expression>>,
         method: String,
         args: Vec<Expression>,
     },
@@ -218,16 +217,8 @@ impl fmt::Display for Expression {
             Expression::Unary(op, expr) => {
                 write!(f, "({:?} {})", op, expr)
             }
-            Expression::Call {
-                receiver,
-                method,
-                args,
-            } => {
-                if let Some(recv) = receiver {
-                    write!(f, "{}.{}(", recv, method)?;
-                } else {
-                    write!(f, "{}(", method)?;
-                }
+            Expression::Call { method, args } => {
+                write!(f, "{}(", method)?;
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;

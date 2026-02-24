@@ -1,3 +1,5 @@
+package main
+
 // Test file for call evaluation and lookup
 
 // Simple function with no parameters

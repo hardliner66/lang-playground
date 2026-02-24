@@ -923,7 +923,6 @@ impl Parser {
                     };
 
                     expr = Expression::Call {
-                        receiver: Some(Box::new(expr)),
                         method: method_name,
                         args,
                     };
@@ -1012,7 +1011,6 @@ impl Parser {
 
                         let last_part = namespace_parts.pop().unwrap();
                         return Ok(Expression::Call {
-                            receiver: None,
                             method: last_part,
                             args,
                         });
@@ -1025,11 +1023,7 @@ impl Parser {
                     self.advance();
                     let args = self.parse_argument_list()?;
                     self.expect(Token::RightParen)?;
-                    Ok(Expression::Call {
-                        receiver: None,
-                        method: name,
-                        args,
-                    })
+                    Ok(Expression::Call { method: name, args })
                 } else {
                     Ok(Expression::Identifier(name))
                 }
