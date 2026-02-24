@@ -1,0 +1,15 @@
+[package]
+name = "lang"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.5.60", features = ["derive"] }
+anyhow = "1.0.102"
+tracing = { version ="0.1.44", features = ["log"] }
+tracing-subscriber = "0.3.22"
+env_logger = "0.11.9"
+fern = "0.7.1"
+humantime = "2.3.0"
+log = "0.4.29"
+chrono = "0.4.44"
