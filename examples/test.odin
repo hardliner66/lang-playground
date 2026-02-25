@@ -8,8 +8,8 @@ Message :: struct {
 }
 
 Point :: struct {
-    x: int,
-    y: int,
+	x: int,
+	y: int,
 }
 
 hello :: proc(name: string) {
@@ -17,6 +17,7 @@ hello :: proc(name: string) {
 }
 
 main :: proc() {
+	p := Point { x: 1, y: 2 }
     hello("World")
     println("Result: ", result)
 }

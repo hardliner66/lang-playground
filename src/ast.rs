@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt};
+use std::fmt;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Attribute {
@@ -34,7 +34,6 @@ pub enum Statement {
     ColonAssignment(String, Expression),
     ProcDef(ProcDef),
     StructDef(StructDef),
-    SystemDef(SystemDef),
     Import(String),
     If(IfStatement),
     For(ForStatement),
@@ -49,6 +48,14 @@ pub enum Statement {
 pub struct Parameter {
     pub name: String,
     pub typ: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HandlerDef {
+    pub name: String,
+    pub params: Vec<Parameter>,
+    pub body: Vec<Statement>,
+    pub attributes: Vec<Attribute>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -68,14 +75,6 @@ pub struct StructDef {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct SystemDef {
-    pub name: String,
-    pub fields: Vec<Field>,
-    pub handlers: HashMap<String, ProcDef>,
-    pub attributes: Vec<Attribute>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct IfStatement {
     pub condition: Expression,
     pub then_block: Vec<Statement>,
@@ -89,13 +88,18 @@ pub struct ForStatement {
     pub iterable: Expression,
     pub body: Vec<Statement>,
 }
+#[derive(Debug, Clone, PartialEq)]
+pub struct Message {
+    pub name: String,
+    pub args: Vec<Expression>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expression {
     Integer(i64),
     Float(f64),
     String(String),
-    StringInterpolation(Vec<InterpolationPart>), // String with embedded expressions
+    StringInterpolation(Vec<InterpolationPart>),
     Symbol(String),
     NamespaceAccess(Vec<String>),
     Boolean(bool),

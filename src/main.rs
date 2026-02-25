@@ -32,7 +32,7 @@ fn run(
     match interpreter.run(program) {
         Ok(Value::Integer(i)) => std::process::exit(i as i32),
         Ok(_) => Ok(()),
-        Err(err) => Err(anyhow::anyhow!(err)),
+        Err(err) => Err(anyhow::anyhow!(format!("{:#?}\n{}", interpreter, err))),
     }
 }
 

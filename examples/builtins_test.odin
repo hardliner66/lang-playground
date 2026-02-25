@@ -1,16 +1,7 @@
 // Built-in Functions Test Suite
-package main
 
 // Test println - prints with newline
 test_println :: proc() {
-    println("=== Testing println ===")
-    println("Hello, World!")
-    println("Multiple", "arguments", "on", "one", "line")
-    println("Numbers:", 1, 2, 3, 4, 5)
-    println()
-}
-
-// Test print - prints without newline
 test_print :: proc() {
     println("=== Testing print ===")
     print("This ")
@@ -111,6 +102,13 @@ test_complex :: proc() {
     println("Array has", len(numbers), "elements")
 
     println()
+}
+
+blah :: system {
+	c: int,
+	a :: proc() {
+		println("Hello, World!")
+	}
 }
 
 // Helper function to demonstrate function calls

@@ -21,9 +21,9 @@ pub enum Value {
     Array(Rc<RefCell<Vec<Value>>>),
     Hash(Rc<RefCell<HashMap<String, Value>>>),
     Lambda(Vec<String>, Vec<Statement>, Rc<RefCell<Environment>>),
+    Handler(HandlerDef),
     Proc(ProcDef),
     Struct(StructDef),
-    System(SystemDef),
     Instance(String, Rc<RefCell<HashMap<String, Value>>>),
 }
 
@@ -54,7 +54,6 @@ impl Value {
     pub fn to_string(&self) -> String {
         match &self {
             Value::Integer(n) => n.to_string(),
-            Value::System(s) => format!("#<System: {}>", s.name),
             Value::Float(f) => f.to_string(),
             Value::String(s) => s.clone(),
             Value::Symbol(s) => format!(":{}", s),
@@ -75,6 +74,7 @@ impl Value {
             }
             Value::Lambda(_, _, _) => "#<Lambda>".to_string(),
             Value::Proc(p) => format!("#<Proc: {}>", p.name),
+            Value::Handler(h) => format!("#<Handler: {}>", h.name),
             Value::Struct(s) => format!("#<Struct: {}>", s.name),
             Value::Instance(name, _) => format!("#<Instance of {}>", name),
         }
@@ -173,6 +173,7 @@ pub enum FlowControl {
     Continue,
 }
 
+#[derive(Debug)]
 pub struct Interpreter {
     debug: bool,
     env: Rc<RefCell<Environment>>,
@@ -251,11 +252,6 @@ impl Interpreter {
             Statement::StructDef(struct_def) => {
                 let value = Value::Struct(struct_def.clone());
                 self.env.borrow_mut().define(struct_def.name.clone(), value);
-                Ok(FlowControl::None)
-            }
-            Statement::SystemDef(system_def) => {
-                let value = Value::System(system_def.clone());
-                self.env.borrow_mut().define(system_def.name.clone(), value);
                 Ok(FlowControl::None)
             }
             Statement::If(if_stmt) => self.execute_if(if_stmt),
@@ -364,12 +360,12 @@ impl Interpreter {
             Expression::Nil => Ok(Value::Nil),
             Expression::Identifier(name) => {
                 if name == "self" {
-                    return Ok(Value::Nil);
+                    self.evaluate_expression(&Expression::Identifier("self".to_string()))
+                } else if let Some(value) = self.env.borrow().get(name) {
+                    Ok(value)
+                } else {
+                    Ok(Value::Nil)
                 }
-                self.env
-                    .borrow()
-                    .get(name)
-                    .ok_or_else(|| format!("Undefined variable '{}'", name))
             }
             Expression::Array(elements) => {
                 let mut values = Vec::new();
@@ -547,7 +543,7 @@ impl Interpreter {
             }
             "type_of" => {
                 if args.len() != 1 {
-                    return Err(format!("type_of() expects 1 argument, got {}", args.len()));
+                    return Err(format!("type_of() expects 0 argument, got {}", args.len()));
                 }
                 let val = self.evaluate_expression(&args[0])?;
                 let type_name = match val {
@@ -561,9 +557,9 @@ impl Interpreter {
                     Value::Hash(_) => "hash",
                     Value::Lambda(_, _, _) => "lambda",
                     Value::Proc(_) => "proc",
+                    Value::Handler(_) => "handler",
                     Value::Struct(_) => "struct",
                     Value::Instance(_, _) => "instance",
-                    Value::System(_) => "system",
                 };
                 return Ok(Value::String(type_name.to_string()));
             }
@@ -1087,47 +1083,6 @@ mod tests {
             range[0]
         "#;
         assert_eq!(run_code(code).unwrap(), Value::Integer(1));
-    }
-
-    #[test]
-    fn test_system_instantiation() {
-        let code = r#"
-            system Person
-                def initialize(name, age)
-                    @name = name
-                    @age = age
-                end
-
-                def get_age()
-                    return @age
-                end
-            end
-
-            person = Person.new("Alice", 25)
-            person.get_age()
-        "#;
-        assert_eq!(run_code(code).unwrap(), Value::Integer(25));
-    }
-
-    #[test]
-    fn test_system_methods() {
-        let code = r#"
-            system Counter
-                def initialize(start)
-                    @count = start
-                end
-
-                def increment()
-                    @count = @count + 1
-                    return @count
-                end
-            end
-
-            counter = Counter.new(10)
-            counter.increment()
-            counter.increment()
-        "#;
-        assert_eq!(run_code(code).unwrap(), Value::Integer(12));
     }
 
     #[test]

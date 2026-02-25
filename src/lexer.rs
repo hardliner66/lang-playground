@@ -17,6 +17,10 @@ pub enum Token {
     // Identifiers and Keywords
     Identifier(String),
     Proc,
+    Handler,
+    System,
+    Send,
+    To,
     Struct,
     Import,
     If,
@@ -407,6 +411,10 @@ impl Lexer {
 
         match ident.as_str() {
             "proc" => Token::Proc,
+            "handler" => Token::Handler,
+            "system" => Token::System,
+            "send" => Token::Send,
+            "to" => Token::To,
             "struct" => Token::Struct,
             "import" => Token::Import,
             "if" => Token::If,

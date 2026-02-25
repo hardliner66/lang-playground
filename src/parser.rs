@@ -6,26 +6,58 @@ use crate::ast::*;
 use crate::ast::{Attribute, AttributeArg};
 use crate::lexer::{Lexer, Token};
 
+pub enum Either<A, B> {
+    Left(A),
+    Right(B),
+}
+
 pub struct Parser {
+    code: String,
     tokens: Vec<Token>,
     position: usize,
     current_token: Token,
 }
 
 #[derive(Debug)]
+pub struct Span {
+    pub line: usize,
+    pub column: usize,
+}
+
+impl Display for Span {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.line, self.column)
+    }
+}
+
+#[derive(Debug)]
 pub struct ParseError {
+    pub span: Span,
     pub message: String,
 }
 
 impl Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "{}", self.message)
+        writeln!(f, "{} at {}", self.message, self.span)
     }
 }
 
 impl ParseError {
-    fn new(message: String) -> Self {
-        ParseError { message }
+    fn new(parser: &Parser, message: String) -> Self {
+        let mut line = 0;
+        let mut column = 0;
+        for c in parser.code.chars().take(parser.position) {
+            if c == '\n' {
+                line += 1;
+                column = 0;
+            } else {
+                column += 1;
+            }
+        }
+        ParseError {
+            message,
+            span: Span { line, column },
+        }
     }
 }
 
@@ -40,6 +72,7 @@ impl Parser {
         let tokens = lexer.tokenize();
         let current_token = tokens.get(0).cloned().unwrap_or(Token::Eof);
         Parser {
+            code: input.to_string(),
             tokens,
             position: 0,
             current_token,
@@ -70,10 +103,10 @@ impl Parser {
             self.advance();
             Ok(())
         } else {
-            Err(ParseError::new(format!(
-                "Expected {:?}, got {:?}",
-                expected, self.current_token
-            )))
+            Err(ParseError::new(
+                self,
+                format!("Expected {:?}, got {:?}", expected, self.current_token),
+            ))
         }
     }
 
@@ -85,7 +118,10 @@ impl Parser {
 
     #[instrument(skip(self))]
     fn skip_terminators(&mut self) {
-        while self.current_token == Token::Newline || self.current_token == Token::Semicolon {
+        while self.current_token == Token::Newline
+            || self.current_token == Token::Semicolon
+            || self.current_token == Token::Comma
+        {
             self.advance();
         }
     }
@@ -140,6 +176,39 @@ impl Parser {
     }
 
     #[instrument(skip(self))]
+    fn parse_receivers(&mut self) -> ParseResult<Vec<Expression>> {
+        self.expect(Token::To)?;
+        let mut receivers = Vec::new();
+
+        if self.current_token == Token::LeftBracket {
+            loop {
+                match &self.current_token {
+                    Token::Else | Token::Eof | Token::RightBracket => break,
+                    _ => {}
+                }
+
+                if let Token::Identifier(name) = &self.current_token {
+                    receivers.push(Expression::String(name.clone()));
+                }
+
+                self.skip_terminators();
+            }
+        } else if let Token::Identifier(name) = &self.current_token {
+            receivers.push(Expression::String(name.clone()));
+        } else {
+            return Err(ParseError::new(
+                self,
+                format!(
+                    "Expected identifier or left bracket, got {:?}",
+                    self.current_token
+                ),
+            ));
+        }
+
+        Ok(receivers)
+    }
+
+    #[instrument(skip(self))]
     fn parse_attributes(&mut self) -> ParseResult<Vec<Attribute>> {
         let mut attributes = Vec::new();
 
@@ -152,10 +221,10 @@ impl Parser {
                 self.advance();
                 name
             } else {
-                return Err(ParseError::new(format!(
-                    "Expected attribute name, got {:?}",
-                    self.current_token
-                )));
+                return Err(ParseError::new(
+                    self,
+                    format!("Expected attribute name, got {:?}", self.current_token),
+                ));
             };
 
             let args = if self.current_token == Token::LeftParen {
@@ -231,10 +300,10 @@ impl Parser {
                 self.advance();
                 Ok(AttributeArg::Boolean(false))
             }
-            _ => Err(ParseError::new(format!(
-                "Expected attribute argument, got {:?}",
-                self.current_token
-            ))),
+            _ => Err(ParseError::new(
+                self,
+                format!("Expected attribute argument, got {:?}", self.current_token),
+            )),
         }
     }
 
@@ -308,10 +377,10 @@ impl Parser {
             self.advance();
             name
         } else {
-            return Err(ParseError::new(format!(
-                "Expected field name, got {:?}",
-                self.current_token
-            )));
+            return Err(ParseError::new(
+                self,
+                format!("Expected field name, got {:?}", self.current_token),
+            ));
         };
 
         self.expect(Token::Colon)?;
@@ -321,10 +390,10 @@ impl Parser {
             self.advance();
             typ
         } else {
-            return Err(ParseError::new(format!(
-                "Expected field type, got {:?}",
-                self.current_token
-            )));
+            return Err(ParseError::new(
+                self,
+                format!("Expected field type, got {:?}", self.current_token),
+            ));
         };
 
         // Skip optional comma
@@ -347,10 +416,10 @@ impl Parser {
             self.advance();
             name
         } else {
-            return Err(ParseError::new(format!(
-                "Expected identifier, got {:?}",
-                self.current_token
-            )));
+            return Err(ParseError::new(
+                self,
+                format!("Expected identifier, got {:?}", self.current_token),
+            ));
         };
 
         self.expect(Token::DoubleColon)?;
@@ -358,10 +427,13 @@ impl Parser {
         match &self.current_token {
             Token::Proc => self.parse_proc_def(name, attributes),
             Token::Struct => self.parse_struct_def(name, attributes),
-            _ => Err(ParseError::new(format!(
-                "Expected 'proc' or 'struct' after '::', got {:?}",
-                self.current_token
-            ))),
+            _ => Err(ParseError::new(
+                self,
+                format!(
+                    "Expected 'proc' or 'struct' after '::', got {:?}",
+                    self.current_token
+                ),
+            )),
         }
     }
 
@@ -390,10 +462,13 @@ impl Parser {
                 self.advance();
                 Some(typ)
             } else {
-                return Err(ParseError::new(format!(
-                    "Expected return type after '->', got {:?}",
-                    self.current_token
-                )));
+                return Err(ParseError::new(
+                    self,
+                    format!(
+                        "Expected return type after '->', got {:?}",
+                        self.current_token
+                    ),
+                ));
             }
         } else {
             None
@@ -417,6 +492,39 @@ impl Parser {
     }
 
     #[instrument(skip(self))]
+    fn parse_handler_def(
+        &mut self,
+        name: String,
+        attributes: Vec<Attribute>,
+    ) -> ParseResult<HandlerDef> {
+        self.expect(Token::Handler)?;
+
+        let params = if self.current_token == Token::LeftParen {
+            self.advance();
+            let params = self.parse_parameter_list()?;
+            self.expect(Token::RightParen)?;
+            params
+        } else {
+            Vec::new()
+        };
+
+        self.skip_newlines();
+        self.expect(Token::LeftBrace)?;
+        self.skip_newlines();
+
+        let body = self.parse_statements()?;
+
+        self.expect(Token::RightBrace)?;
+
+        Ok(HandlerDef {
+            name,
+            params,
+            body,
+            attributes,
+        })
+    }
+
+    #[instrument(skip(self))]
     fn parse_parameter_list(&mut self) -> ParseResult<Vec<Parameter>> {
         let mut params = Vec::new();
 
@@ -432,10 +540,10 @@ impl Parser {
                     self.advance();
                     Some(typ)
                 } else {
-                    return Err(ParseError::new(format!(
-                        "Expected type after ':', got {:?}",
-                        self.current_token
-                    )));
+                    return Err(ParseError::new(
+                        self,
+                        format!("Expected type after ':', got {:?}", self.current_token),
+                    ));
                 }
             } else {
                 None
@@ -459,10 +567,10 @@ impl Parser {
                             self.advance();
                             Some(typ)
                         } else {
-                            return Err(ParseError::new(format!(
-                                "Expected type after ':', got {:?}",
-                                self.current_token
-                            )));
+                            return Err(ParseError::new(
+                                self,
+                                format!("Expected type after ':', got {:?}", self.current_token),
+                            ));
                         }
                     } else {
                         None
@@ -473,10 +581,10 @@ impl Parser {
                         typ: param_type,
                     });
                 } else {
-                    return Err(ParseError::new(format!(
-                        "Expected parameter name, got {:?}",
-                        self.current_token
-                    )));
+                    return Err(ParseError::new(
+                        self,
+                        format!("Expected parameter name, got {:?}", self.current_token),
+                    ));
                 }
             }
         }
@@ -557,10 +665,10 @@ impl Parser {
             self.advance();
             path
         } else {
-            return Err(ParseError::new(format!(
-                "Expected string, got {:?}",
-                self.current_token
-            )));
+            return Err(ParseError::new(
+                self,
+                format!("Expected string, got {:?}", self.current_token),
+            ));
         };
 
         Ok(Statement::Import(path))
@@ -573,10 +681,10 @@ impl Parser {
             self.advance();
             name
         } else {
-            return Err(ParseError::new(format!(
-                "Expected identifier, got {:?}",
-                self.current_token
-            )));
+            return Err(ParseError::new(
+                self,
+                format!("Expected identifier, got {:?}", self.current_token),
+            ));
         };
 
         self.expect(Token::ColonAssign)?;
@@ -599,10 +707,10 @@ impl Parser {
             self.advance();
             name
         } else {
-            return Err(ParseError::new(format!(
-                "Expected identifier, got {:?}",
-                self.current_token
-            )));
+            return Err(ParseError::new(
+                self,
+                format!("Expected identifier, got {:?}", self.current_token),
+            ));
         };
 
         self.expect(Token::Assign)?;
@@ -621,10 +729,13 @@ impl Parser {
             self.advance();
             name
         } else {
-            return Err(ParseError::new(format!(
-                "Expected variable name in for loop, got {:?}",
-                self.current_token
-            )));
+            return Err(ParseError::new(
+                self,
+                format!(
+                    "Expected variable name in for loop, got {:?}",
+                    self.current_token
+                ),
+            ));
         };
 
         self.expect(Token::In)?;
@@ -657,6 +768,36 @@ impl Parser {
         };
 
         Ok(Statement::Return(expr))
+    }
+
+    #[instrument(skip(self))]
+    fn parse_message(&mut self) -> ParseResult<Message> {
+        let name = if let Token::Identifier(name) = &self.current_token {
+            let name = name.clone();
+            self.advance();
+            name
+        } else {
+            return Err(ParseError::new(
+                self,
+                format!("Expected identifier after, got {:?}", self.current_token),
+            ));
+        };
+
+        let mut args = Vec::new();
+        if self.current_token == Token::LeftParen {
+            self.advance();
+            if self.current_token != Token::RightParen {
+                args.push(self.parse_expression()?);
+                while self.current_token == Token::Comma {
+                    self.advance();
+                    args.push(self.parse_expression()?);
+                }
+            }
+        }
+
+        self.expect(Token::RightParen)?;
+
+        Ok(Message { name, args })
     }
 
     #[instrument(skip(self))]
@@ -907,10 +1048,13 @@ impl Parser {
                         self.advance();
                         name
                     } else {
-                        return Err(ParseError::new(format!(
-                            "Expected method name after '.', got {:?}",
-                            self.current_token
-                        )));
+                        return Err(ParseError::new(
+                            self,
+                            format!(
+                                "Expected method name after '.', got {:?}",
+                                self.current_token
+                            ),
+                        ));
                     };
 
                     let args = if self.current_token == Token::LeftParen {
@@ -997,10 +1141,13 @@ impl Parser {
                             namespace_parts.push(part.clone());
                             self.advance();
                         } else {
-                            return Err(ParseError::new(format!(
-                                "Expected identifier after '::', got {:?}",
-                                self.current_token
-                            )));
+                            return Err(ParseError::new(
+                                self,
+                                format!(
+                                    "Expected identifier after '::', got {:?}",
+                                    self.current_token
+                                ),
+                            ));
                         }
                     }
 
@@ -1047,10 +1194,10 @@ impl Parser {
                 Ok(Expression::Hash(pairs))
             }
 
-            _ => Err(ParseError::new(format!(
-                "Unexpected token in expression: {:?}",
-                self.current_token
-            ))),
+            _ => Err(ParseError::new(
+                self,
+                format!("Unexpected token in expression: {:?}", self.current_token),
+            )),
         }
     }
 
@@ -1126,6 +1273,7 @@ impl Parser {
     fn parse_interpolation_tokens(&mut self, tokens: Vec<Token>) -> ParseResult<Expression> {
         if tokens.is_empty() {
             return Err(ParseError::new(
+                self,
                 "Empty interpolation expression".to_string(),
             ));
         }
