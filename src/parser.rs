@@ -216,16 +216,7 @@ impl Parser {
             self.advance();
             self.expect(Token::LeftBracket)?;
 
-            let name = if let Token::Identifier(n) = &self.current_token {
-                let name = n.clone();
-                self.advance();
-                name
-            } else {
-                return Err(ParseError::new(
-                    self,
-                    format!("Expected attribute name, got {:?}", self.current_token),
-                ));
-            };
+            let name = self.parse_identifier()?;
 
             let args = if self.current_token == Token::LeftParen {
                 self.advance();
@@ -372,29 +363,11 @@ impl Parser {
             Vec::new()
         };
 
-        let name = if let Token::Identifier(n) = &self.current_token {
-            let name = n.clone();
-            self.advance();
-            name
-        } else {
-            return Err(ParseError::new(
-                self,
-                format!("Expected field name, got {:?}", self.current_token),
-            ));
-        };
+        let name = self.parse_identifier()?;
 
         self.expect(Token::Colon)?;
 
-        let typ = if let Token::Identifier(t) = &self.current_token {
-            let typ = t.clone();
-            self.advance();
-            typ
-        } else {
-            return Err(ParseError::new(
-                self,
-                format!("Expected field type, got {:?}", self.current_token),
-            ));
-        };
+        let typ = self.parse_identifier()?;
 
         // Skip optional comma
         if self.current_token == Token::Comma {
@@ -411,16 +384,7 @@ impl Parser {
     #[instrument(skip(self))]
     fn parse_declaration(&mut self, attributes: Vec<Attribute>) -> ParseResult<Statement> {
         // name :: proc(...) or name :: struct {...}
-        let name = if let Token::Identifier(n) = &self.current_token {
-            let name = n.clone();
-            self.advance();
-            name
-        } else {
-            return Err(ParseError::new(
-                self,
-                format!("Expected identifier, got {:?}", self.current_token),
-            ));
-        };
+        let name = self.parse_identifier()?;
 
         self.expect(Token::DoubleColon)?;
 
@@ -675,17 +639,22 @@ impl Parser {
     }
 
     #[instrument(skip(self))]
-    fn parse_colon_assignment(&mut self) -> ParseResult<Statement> {
-        let name = if let Token::Identifier(n) = &self.current_token {
+    fn parse_identifier(&mut self) -> ParseResult<String> {
+        if let Token::Identifier(n) = &self.current_token {
             let name = n.clone();
             self.advance();
-            name
+            Ok(name)
         } else {
-            return Err(ParseError::new(
+            Err(ParseError::new(
                 self,
                 format!("Expected identifier, got {:?}", self.current_token),
-            ));
-        };
+            ))
+        }
+    }
+
+    #[instrument(skip(self))]
+    fn parse_colon_assignment(&mut self) -> ParseResult<Statement> {
+        let name = self.parse_identifier()?;
 
         self.expect(Token::ColonAssign)?;
         let value = self.parse_expression()?;
@@ -702,16 +671,7 @@ impl Parser {
 
     #[instrument(skip(self))]
     fn parse_assignment(&mut self) -> ParseResult<Statement> {
-        let name = if let Token::Identifier(n) = &self.current_token {
-            let name = n.clone();
-            self.advance();
-            name
-        } else {
-            return Err(ParseError::new(
-                self,
-                format!("Expected identifier, got {:?}", self.current_token),
-            ));
-        };
+        let name = self.parse_identifier()?;
 
         self.expect(Token::Assign)?;
         let expr = self.parse_expression()?;
@@ -724,19 +684,7 @@ impl Parser {
         self.expect(Token::For)?;
         self.skip_newlines();
 
-        let variable = if let Token::Identifier(name) = &self.current_token {
-            let name = name.clone();
-            self.advance();
-            name
-        } else {
-            return Err(ParseError::new(
-                self,
-                format!(
-                    "Expected variable name in for loop, got {:?}",
-                    self.current_token
-                ),
-            ));
-        };
+        let variable = self.parse_identifier()?;
 
         self.expect(Token::In)?;
         self.skip_newlines();
@@ -768,36 +716,6 @@ impl Parser {
         };
 
         Ok(Statement::Return(expr))
-    }
-
-    #[instrument(skip(self))]
-    fn parse_message(&mut self) -> ParseResult<Message> {
-        let name = if let Token::Identifier(name) = &self.current_token {
-            let name = name.clone();
-            self.advance();
-            name
-        } else {
-            return Err(ParseError::new(
-                self,
-                format!("Expected identifier after, got {:?}", self.current_token),
-            ));
-        };
-
-        let mut args = Vec::new();
-        if self.current_token == Token::LeftParen {
-            self.advance();
-            if self.current_token != Token::RightParen {
-                args.push(self.parse_expression()?);
-                while self.current_token == Token::Comma {
-                    self.advance();
-                    args.push(self.parse_expression()?);
-                }
-            }
-        }
-
-        self.expect(Token::RightParen)?;
-
-        Ok(Message { name, args })
     }
 
     #[instrument(skip(self))]
@@ -1043,19 +961,7 @@ impl Parser {
             match &self.current_token {
                 Token::Dot => {
                     self.advance();
-                    let method_name = if let Token::Identifier(name) = &self.current_token {
-                        let name = name.clone();
-                        self.advance();
-                        name
-                    } else {
-                        return Err(ParseError::new(
-                            self,
-                            format!(
-                                "Expected method name after '.', got {:?}",
-                                self.current_token
-                            ),
-                        ));
-                    };
+                    let method_name = self.parse_identifier()?;
 
                     let args = if self.current_token == Token::LeftParen {
                         self.advance();
